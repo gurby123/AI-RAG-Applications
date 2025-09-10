@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import streamlit as st
 from docx import Document
 from docx.shared import Pt
@@ -17,11 +19,27 @@ class OllamaConfig:
     model: str
     temperature: float = 0.2
     num_ctx: int = 8192
+    connect_timeout: float = 10.0
+    read_timeout: float = 120.0
+    max_retries: int = 2
 
 
 class OllamaClient:
     def __init__(self, config: OllamaConfig) -> None:
         self.config = config
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=self.config.max_retries,
+            connect=self.config.max_retries,
+            read=self.config.max_retries,
+            backoff_factor=0.8,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
 
     @retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), retry=retry_if_exception_type((requests.RequestException,)))
     def generate(self, prompt: str, system: Optional[str] = None) -> str:
@@ -37,10 +55,24 @@ class OllamaClient:
         }
         if system:
             payload["system"] = system
-        response = requests.post(endpoint, json=payload, timeout=120)
+        response = self.session.post(
+            endpoint,
+            json=payload,
+            timeout=(self.config.connect_timeout, self.config.read_timeout),
+        )
         response.raise_for_status()
         data = response.json()
         return data.get("response", "")
+
+    def test_connection(self) -> Dict[str, Any]:
+        """Check connectivity and available models via /api/tags."""
+        endpoint = self.config.base_url.rstrip("/") + "/api/tags"
+        response = self.session.get(
+            endpoint,
+            timeout=(self.config.connect_timeout, min(self.config.read_timeout, 10.0)),
+        )
+        response.raise_for_status()
+        return response.json()
 
 
 def extract_first_json_block(text: str) -> Optional[str]:
@@ -136,7 +168,16 @@ def call_analysis_for_chunk(client: OllamaClient, chunk_text_value: str) -> Dict
         " Avoid duplication and keep items atomic."
         f"\n\nCHUNK:\n{chunk_text_value}"
     )
-    response_text = client.generate(prompt=prompt, system=system)
+    try:
+        response_text = client.generate(prompt=prompt, system=system)
+    except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+        return {
+            "facts": [],
+            "deductions": [],
+            "factors": {"internal": [], "external": []},
+            "insights": [],
+            "_error": f"request_failed: {e}",
+        }
     json_block = extract_first_json_block(response_text) or response_text
     try:
         parsed = json.loads(json_block)
@@ -384,6 +425,9 @@ def run_app() -> None:
         model = st.text_input("Model", value=default_model, help="Example: llama3.1")
         temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
         num_ctx = st.select_slider("Context Tokens (approx)", options=[2048, 4096, 8192, 12288, 16384], value=8192)
+        connect_timeout = st.number_input("Connect timeout (s)", min_value=1.0, max_value=60.0, value=10.0, step=1.0)
+        read_timeout = st.number_input("Read timeout (s)", min_value=10.0, max_value=600.0, value=180.0, step=10.0)
+        max_retries = st.slider("HTTP retries", 0, 5, 2)
         st.session_state["ollama_base"] = base_url
         st.session_state["ollama_model"] = model
 
@@ -419,8 +463,26 @@ def run_app() -> None:
         st.write(f"Identified {len(chunks)} chunk(s).")
 
         client = OllamaClient(
-            OllamaConfig(base_url=base_url, model=model, temperature=temperature, num_ctx=int(num_ctx))
+            OllamaConfig(
+                base_url=base_url,
+                model=model,
+                temperature=temperature,
+                num_ctx=int(num_ctx),
+                connect_timeout=float(connect_timeout),
+                read_timeout=float(read_timeout),
+                max_retries=int(max_retries),
+            )
         )
+
+        # Connection test before heavy calls
+        try:
+            meta = client.test_connection()
+            available_models = [m.get("name") for m in meta.get("models", [])] if isinstance(meta, dict) else []
+            if available_models and model not in available_models:
+                st.warning(f"Model '{model}' not in available models: {available_models}")
+        except Exception as e:
+            st.error(f"Failed to connect to Ollama at {base_url}: {e}")
+            st.stop()
 
         progress = st.progress(0.0, text="Analyzing chunks...")
         per_chunk_results: List[Dict[str, Any]] = []
