@@ -37,6 +37,22 @@ streamlit run app.py
    - Click "Generate Strategic Plan"
    - Download the plan with the provided button
 
+Using Ollama (LLaMA 3.1)
+------------------------
+This app can optionally send the extracted text and heuristic factor summary to an Ollama server to produce a refined, board-ready narrative.
+
+- Ensure you have an accessible Ollama server with the model available, for example:
+  - Host: `192.168.2.200`
+  - Port: `11434`
+  - Model: `llama3.1` (or a local tag you use)
+
+- In the app sidebar:
+  - Check "Use Ollama LLaMA 3.1 to refine plan"
+  - Set the host/port/model as needed
+  - Adjust temperature if desired
+
+- The LLM narrative will be displayed and embedded in the downloaded .docx.
+
 Notes
 -----
 - The model is rule-based and uses keyword heuristics for salience; it does not require external APIs.

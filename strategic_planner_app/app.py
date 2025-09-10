@@ -1,10 +1,11 @@
 import io
 import re
 from datetime import datetime
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 import streamlit as st
 from docx import Document
+import requests
 
 
 # ---------------------------
@@ -251,7 +252,7 @@ def generate_strategic_plan(analysis: Dict[str, Any], horizon_months: int = 12, 
     return plan
 
 
-def build_plan_docx(plan: Dict[str, Any], source_title: str = "Uploaded Document") -> bytes:
+def build_plan_docx(plan: Dict[str, Any], source_title: str = "Uploaded Document", llm_narrative: Optional[str] = None) -> bytes:
     doc = Document()
     doc.add_heading('Strategic Plan based on Burke–Litwin Model', 0)
     doc.add_paragraph(f"Generated: {plan['generated_at']}")
@@ -302,6 +303,15 @@ def build_plan_docx(plan: Dict[str, Any], source_title: str = "Uploaded Document
     for link in plan["analysis"]["links"]:
         doc.add_paragraph(f"{link['from']} → {link['to']} (weight {link['weight']})")
 
+    if llm_narrative:
+        doc.add_heading('LLM-Refined Strategic Plan (Ollama LLaMA 3.1)', level=1)
+        for line in llm_narrative.splitlines():
+            text = line.strip('\n')
+            if not text:
+                doc.add_paragraph("")
+            else:
+                doc.add_paragraph(text)
+
     buffer = io.BytesIO()
     doc.save(buffer)
     return buffer.getvalue()
@@ -320,6 +330,65 @@ def _analysis_table(analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _build_llm_prompts(raw_text: str, analysis: Dict[str, Any]) -> Tuple[str, str]:
+    table_rows = _analysis_table(analysis)
+    table_text_lines: List[str] = [
+        "Factor | Score | Mentions | Top signals"
+    ]
+    for r in table_rows:
+        table_text_lines.append(f"{r['Factor']} | {r['Score']} | {r['Mentions']} | {r['Top signals']}")
+    table_text = "\n".join(table_text_lines)
+
+    truncated_text = raw_text[:6000]
+
+    system_prompt = (
+        "You are an elite management consultant specializing in organizational transformation using the Burke–Litwin model. "
+        "Synthesize inputs into a pragmatic, board-ready strategic plan. Be specific, concise, and actionable."
+    )
+
+    user_prompt = (
+        "Context document (truncated):\n" + truncated_text +
+        "\n\nObserved factor signals (heuristic):\n" + table_text +
+        "\n\nDeliver a Burke–Litwin-based strategic plan with these sections: \n"
+        "1) Executive Summary (2-4 bullets)\n"
+        "2) Diagnosis by Factor (insights per factor)\n"
+        "3) Strategic Objectives (3-8, each with owner, target, KPIs)\n"
+        "4) Initiatives (transformational and quick wins, with timeline, risks, dependencies)\n"
+        "5) KPIs Dashboard (bulleted)\n"
+        "6) Causal Links and Rationale (bulleted)\n"
+        "Keep it structured in clear markdown."
+    )
+    return system_prompt, user_prompt
+
+
+def call_ollama_chat(host: str, port: int, model: str, system_prompt: str, user_prompt: str, temperature: float = 0.3, timeout_s: int = 120) -> str:
+    url = f"http://{host}:{port}/api/chat"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": max(0.0, min(1.0, temperature))},
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout_s)
+        resp.raise_for_status()
+        data = resp.json()
+        # Ollama chat returns { message: { content: "..." }, ... }
+        message = data.get("message", {})
+        content = message.get("content")
+        if not content and isinstance(data, dict) and "choices" in data:
+            # Fallback if API surface differs
+            choices = data.get("choices") or []
+            if choices:
+                content = choices[0].get("message", {}).get("content")
+        return content or ""
+    except Exception as e:
+        return f"[LLM error] {e}"
+
+
 def main() -> None:
     st.set_page_config(page_title="Burke–Litwin Strategic Planner", page_icon="📄", layout="wide")
     st.title("Burke–Litwin Strategic Planning (Document-Driven)")
@@ -333,6 +402,13 @@ def main() -> None:
         st.header("Settings")
         horizon = st.slider("Planning horizon (months)", min_value=3, max_value=24, value=12, step=3)
         max_objectives = st.slider("Max strategic objectives", min_value=3, max_value=10, value=6)
+        st.divider()
+        st.subheader("Ollama (LLM)")
+        use_llm = st.checkbox("Use Ollama LLaMA 3.1 to refine plan", value=True)
+        ollama_host = st.text_input("Ollama host", value="192.168.2.200")
+        ollama_port = st.number_input("Ollama port", value=11434, step=1)
+        ollama_model = st.text_input("Model", value="llama3.1")
+        ollama_temperature = st.slider("Temperature", min_value=0.0, max_value=1.0, value=0.3, step=0.1)
 
     uploaded = st.file_uploader("Upload .docx", type=["docx"], accept_multiple_files=False)
     if uploaded is None:
@@ -368,9 +444,27 @@ def main() -> None:
             st.write(obj["description"])
             st.caption(f"Owner: {obj['owner']} | Target: {obj['target']}")
 
+        llm_output: Optional[str] = None
+        if use_llm:
+            with st.spinner("Contacting Ollama to refine the plan..."):
+                sys_p, usr_p = _build_llm_prompts(raw_text, analysis)
+                llm_output = call_ollama_chat(
+                    host=ollama_host,
+                    port=int(ollama_port),
+                    model=ollama_model,
+                    system_prompt=sys_p,
+                    user_prompt=usr_p,
+                    temperature=float(ollama_temperature),
+                )
+            st.subheader("LLM-Refined Plan Narrative")
+            if llm_output and not llm_output.startswith("[LLM error]"):
+                st.markdown(llm_output)
+            else:
+                st.error(llm_output or "LLM returned empty response.")
+
         # Build downloadable Word doc
         try:
-            doc_bytes = build_plan_docx(plan, source_title=uploaded.name)
+            doc_bytes = build_plan_docx(plan, source_title=uploaded.name, llm_narrative=llm_output)
             st.download_button(
                 label="Download Strategic Plan (.docx)",
                 data=doc_bytes,
