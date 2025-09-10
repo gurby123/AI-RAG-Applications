@@ -135,50 +135,38 @@ def extract_first_json_block(text: str) -> Optional[str]:
     return None
 
 
-def read_docx_text(file_bytes: bytes) -> str:
-    buffer = io.BytesIO(file_bytes)
-    document = Document(buffer)
-    paragraphs = [p.text for p in document.paragraphs]
-    text = "\n".join([p for p in paragraphs if p and p.strip()])
-    return text.strip()
+def read_docx_text(uploaded_file) -> str:
+    """Extracts text from a .docx file-like object or bytes, including tables."""
+    try:
+        doc = Document(uploaded_file if not isinstance(uploaded_file, (bytes, bytearray)) else io.BytesIO(uploaded_file))
+        paragraph_texts = [p.text for p in doc.paragraphs]
+        for tbl in doc.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    paragraph_texts.append(cell.text)
+        paragraph_text = "\n".join([t for t in paragraph_texts if t and t.strip()])
+        return paragraph_text.strip()
+    except Exception as exc:
+        raise ValueError(f"Failed to read .docx: {exc}")
 
 
 def chunk_text(text: str, max_chars: int = 3000, overlap: int = 300) -> List[str]:
-    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p and p.strip()]
-    if not paragraphs:
-        paragraphs = [text.strip()]
-
+    """Simple character-based chunking with overlap."""
+    if not text:
+        return []
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text]
     chunks: List[str] = []
-    current: List[str] = []
-    current_len = 0
-
-    def flush_chunk() -> None:
-        nonlocal current, current_len
-        if current:
-            chunk = "\n\n".join(current).strip()
-            if chunk:
-                chunks.append(chunk)
-        current = []
-        current_len = 0
-
-    for para in paragraphs:
-        para_len = len(para)
-        if current_len + para_len + 2 <= max_chars:
-            current.append(para)
-            current_len += para_len + 2
-        else:
-            flush_chunk()
-            # start new with overlap from previous
-            if chunks and overlap > 0:
-                tail = chunks[-1]
-                tail_overlap = tail[-min(len(tail), overlap) :]
-                current.append(tail_overlap)
-                current_len = len(tail_overlap)
-            current.append(para)
-            current_len += para_len
-    flush_chunk()
-    # Final trim
-    return [c.strip() for c in chunks if c.strip()]
+    start = 0
+    end = max_chars
+    while start < len(text):
+        chunks.append(text[start:end])
+        start = end - overlap
+        if start < 0:
+            start = 0
+        end = start + max_chars
+    return chunks
 
 
 def call_analysis_for_chunk(client: OllamaClient, chunk_text_value: str) -> Dict[str, Any]:
@@ -530,7 +518,7 @@ def run_app() -> None:
     collected_texts: List[str] = []
     if uploaded is not None:
         try:
-            doc_text = read_docx_text(uploaded.read())
+            doc_text = read_docx_text(uploaded)
             if doc_text:
                 collected_texts.append(doc_text)
         except Exception as e:
