@@ -172,25 +172,23 @@ def chunk_text(text: str, max_chars: int = 3000, overlap: int = 300) -> List[str
 def call_analysis_for_chunk(client: OllamaClient, chunk_text_value: str) -> Dict[str, Any]:
     system = (
         "You are a senior corporate strategy analyst."
-        " Extract facts, make cautious deductions, and identify internal and external factors."
+        " Extract factor rows with cautious deductions."
         " Be precise and concise. Output valid minified JSON only."
     )
     prompt = (
-        "From the following business context chunk, extract: facts, deductions, risk/opportunity factors,"
-        " and early insights relevant to corporate strategy."
-        "\n\nReturn strict JSON with keys: facts (string[]), deductions (string[]),"
-        " factors (object with internal: string[], external: string[]), insights (string[])."
-        " Avoid duplication and keep items atomic."
+        "From the following business context CHUNK, produce factor rows, each with:"
+        " name (string), facts (string[]), deductions (string[]), summary (string)."
+        "\nOrganize as strict JSON under factor_tables with two objects: internal and external."
+        "\ninternal has keys: customer_demographics, business_activities_cost, marketing, production_services, staff, leadership, operations, finance, technology, compliance, supply_chain."
+        "\nexternal has keys: political, economic, social, technological, legal, environmental."
+        "\nEach key is an array of row objects as described. Return only JSON."
         f"\n\nCHUNK:\n{chunk_text_value}"
     )
     try:
         response_text = client.generate(prompt=prompt, system=system)
     except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
         return {
-            "facts": [],
-            "deductions": [],
-            "factors": {"internal": [], "external": []},
-            "insights": [],
+            "factor_tables": {"internal": {}, "external": {}},
             "_error": f"request_failed: {e}",
         }
     json_block = extract_first_json_block(response_text) or response_text
@@ -198,60 +196,85 @@ def call_analysis_for_chunk(client: OllamaClient, chunk_text_value: str) -> Dict
         parsed = json.loads(json_block)
         if not isinstance(parsed, dict):
             raise ValueError("Expected JSON object")
-        return parsed
+        # Normalize missing keys
+        ft = parsed.get("factor_tables") or parsed
+        if not isinstance(ft, dict):
+            ft = {"internal": {}, "external": {}}
+        return {"factor_tables": ft}
     except Exception:
-        return {
-            "facts": [],
-            "deductions": [],
-            "factors": {"internal": [], "external": []},
-            "insights": [],
-            "_raw": response_text,
-        }
+        return {"factor_tables": {"internal": {}, "external": {}}, "_raw": response_text}
 
 
 def aggregate_chunk_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    def normalize_item(text_item: str) -> str:
-        return re.sub(r"\s+", " ", text_item.strip()).strip().rstrip(".;")
+    def normalize_text(text_item: str) -> str:
+        return re.sub(r"\s+", " ", (text_item or "").strip()).strip().rstrip(".;")
 
-    def dedupe(items: List[str]) -> List[str]:
+    def merge_lists(a: List[str], b: List[str]) -> List[str]:
         seen = set()
-        unique: List[str] = []
-        for item in items:
-            norm = normalize_item(item).casefold()
+        out: List[str] = []
+        for item in (a or []) + (b or []):
+            norm = normalize_text(item).casefold()
             if norm and norm not in seen:
                 seen.add(norm)
-                unique.append(item.strip())
-        return unique
+                out.append(item.strip())
+        return out
 
-    all_facts: List[str] = []
-    all_deductions: List[str] = []
-    internal_factors: List[str] = []
-    external_factors: List[str] = []
-    insights: List[str] = []
+    def merge_row(existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
+        if not existing:
+            existing = {"name": new.get("name") or "Factor", "facts": [], "deductions": [], "summary": ""}
+        existing["facts"] = merge_lists(existing.get("facts", []), new.get("facts", []) or [])
+        existing["deductions"] = merge_lists(existing.get("deductions", []), new.get("deductions", []) or [])
+        # Prefer longer summary
+        summaries = [existing.get("summary") or "", new.get("summary") or ""]
+        existing["summary"] = max(summaries, key=lambda s: len(s))
+        if not existing.get("name") and new.get("name"):
+            existing["name"] = new.get("name")
+        return existing
+
+    def merge_groups(acc_groups: List[Dict[str, Any]], new_groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        by_name: Dict[str, Dict[str, Any]] = {}
+        for g in acc_groups or []:
+            key = normalize_text(g.get("name", "")).casefold()
+            by_name[key] = g
+        for g in new_groups or []:
+            key = normalize_text(g.get("name", "")).casefold()
+            if key in by_name:
+                by_name[key] = merge_row(by_name[key], g)
+            else:
+                by_name[key] = merge_row({}, g)
+        return list(by_name.values())
+
+    internal_keys = [
+        "customer_demographics",
+        "business_activities_cost",
+        "marketing",
+        "production_services",
+        "staff",
+        "leadership",
+        "operations",
+        "finance",
+        "technology",
+        "compliance",
+        "supply_chain",
+    ]
+    external_keys = ["political", "economic", "social", "technological", "legal", "environmental"]
+
+    aggregated_ft: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"internal": {}, "external": {}}
     raw_responses: List[str] = []
 
     for r in results:
-        all_facts.extend(r.get("facts", []) or [])
-        all_deductions.extend(r.get("deductions", []) or [])
-        f = r.get("factors", {}) or {}
-        internal_factors.extend(f.get("internal", []) or [])
-        external_factors.extend(f.get("external", []) or [])
-        insights.extend(r.get("insights", []) or [])
+        ft = (r.get("factor_tables") or {"internal": {}, "external": {}})
+        for side, keys in [("internal", internal_keys), ("external", external_keys)]:
+            section = ft.get(side, {}) or {}
+            for k in keys:
+                merged = merge_groups(aggregated_ft[side].get(k, []) or [], section.get(k, []) or [])
+                if merged:
+                    aggregated_ft[side][k] = merged
         raw = r.get("_raw")
         if isinstance(raw, str) and raw.strip():
             raw_responses.append(raw.strip())
 
-    aggregated = {
-        "facts": dedupe(all_facts),
-        "deductions": dedupe(all_deductions),
-        "factors": {
-            "internal": dedupe(internal_factors),
-            "external": dedupe(external_factors),
-        },
-        "insights": dedupe(insights),
-        "_raw": raw_responses,
-    }
-    return aggregated
+    return {"factor_tables": aggregated_ft, "_raw": raw_responses}
 
 
 def synthesize_strategy_plan(client: OllamaClient, aggregated: Dict[str, Any]) -> Dict[str, Any]:
@@ -572,20 +595,51 @@ def run_app() -> None:
 
         aggregated = aggregate_chunk_results(per_chunk_results)
 
-        st.subheader("Aggregated Analysis")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Facts**")
-            st.write(aggregated.get("facts", []))
-            st.markdown("**Internal Factors**")
-            st.write(aggregated.get("factors", {}).get("internal", []))
-        with col2:
-            st.markdown("**Deductions**")
-            st.write(aggregated.get("deductions", []))
-            st.markdown("**External Factors**")
-            st.write(aggregated.get("factors", {}).get("external", []))
-        st.markdown("**Insights**")
-        st.write(aggregated.get("insights", []))
+        st.subheader("Aggregated Factor Tables Preview")
+        factor_tables = aggregated.get("factor_tables", {}) or {}
+        internal_ft = factor_tables.get("internal", {}) or {}
+        external_ft = factor_tables.get("external", {}) or {}
+
+        def render_factor_group(title: str, groups: List[Dict[str, Any]]):
+            if not groups:
+                return
+            st.markdown(f"### {title}")
+            rows: List[Dict[str, Any]] = []
+            for g in groups:
+                rows.append(
+                    {
+                        "name": g.get("name"),
+                        "facts": "; ".join(g.get("facts", []) or []),
+                        "deductions": "; ".join(g.get("deductions", []) or []),
+                        "summary": g.get("summary", ""),
+                    }
+                )
+            if rows:
+                df = pd.DataFrame(rows, columns=["name", "facts", "deductions", "summary"])
+                st.dataframe(df, use_container_width=True)
+
+        if internal_ft:
+            st.markdown("#### Internal Factors")
+            render_factor_group("Customer Demographics", internal_ft.get("customer_demographics", []) or [])
+            render_factor_group("Business Activities & Cost", internal_ft.get("business_activities_cost", []) or [])
+            render_factor_group("Marketing", internal_ft.get("marketing", []) or [])
+            render_factor_group("Production / Services", internal_ft.get("production_services", []) or [])
+            render_factor_group("Staff", internal_ft.get("staff", []) or [])
+            render_factor_group("Leadership", internal_ft.get("leadership", []) or [])
+            render_factor_group("Operations", internal_ft.get("operations", []) or [])
+            render_factor_group("Finance", internal_ft.get("finance", []) or [])
+            render_factor_group("Technology", internal_ft.get("technology", []) or [])
+            render_factor_group("Compliance", internal_ft.get("compliance", []) or [])
+            render_factor_group("Supply Chain", internal_ft.get("supply_chain", []) or [])
+
+        if external_ft:
+            st.markdown("#### External Factors (PESTLE)")
+            render_factor_group("Political", external_ft.get("political", []) or [])
+            render_factor_group("Economic", external_ft.get("economic", []) or [])
+            render_factor_group("Social", external_ft.get("social", []) or [])
+            render_factor_group("Technological", external_ft.get("technological", []) or [])
+            render_factor_group("Legal", external_ft.get("legal", []) or [])
+            render_factor_group("Environmental", external_ft.get("environmental", []) or [])
 
         st.subheader("Synthesis: Strategic Plan")
         with st.spinner("Synthesizing plan..."):
