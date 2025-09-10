@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import pandas as pd
 import streamlit as st
 from docx import Document
 from docx.shared import Pt
@@ -20,8 +21,10 @@ class OllamaConfig:
     temperature: float = 0.2
     num_ctx: int = 8192
     connect_timeout: float = 10.0
-    read_timeout: float = 120.0
+    read_timeout: float = 300.0
     max_retries: int = 2
+    stream: bool = True
+    num_predict: int = 1024
 
 
 class OllamaClient:
@@ -47,22 +50,46 @@ class OllamaClient:
         payload: Dict[str, Any] = {
             "model": self.config.model,
             "prompt": prompt,
-            "stream": False,
+            "stream": bool(self.config.stream),
             "options": {
                 "temperature": self.config.temperature,
                 "num_ctx": self.config.num_ctx,
+                "num_predict": self.config.num_predict,
             },
         }
         if system:
             payload["system"] = system
+        if not payload["stream"]:
+            response = self.session.post(
+                endpoint,
+                json=payload,
+                timeout=(self.config.connect_timeout, self.config.read_timeout),
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
+        # Streaming mode: accumulate tokens
         response = self.session.post(
             endpoint,
             json=payload,
             timeout=(self.config.connect_timeout, self.config.read_timeout),
+            stream=True,
         )
         response.raise_for_status()
-        data = response.json()
-        return data.get("response", "")
+        collected: List[str] = []
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            token = obj.get("response")
+            if isinstance(token, str):
+                collected.append(token)
+            if obj.get("done") is True:
+                break
+        return "".join(collected)
 
     def test_connection(self) -> Dict[str, Any]:
         """Check connectivity and available models via /api/tags."""
@@ -250,7 +277,10 @@ def synthesize_strategy_plan(client: OllamaClient, aggregated: Dict[str, Any]) -
         " values (string[]), strategic_themes (string[]), three_year_goals (object[] with: name, description, metrics string[]),"
         " initiatives (object[] with: goal_name, name, description, owner, resources string[], risks string[]),"
         " year_plan (object with year_1, year_2, year_3 each with objectives: object[] {name, description, kpis string[], timeline, owner}),"
-        " action_plans (object[] with: objective_name, actions string[], owner, timeline, dependencies string[])."
+        " action_plans (object[] with: objective_name, actions string[], owner, timeline, dependencies string[]),"
+        " factor_tables (object with internal and external keys)."
+        " internal: object with keys [customer_demographics, business_activities_cost, marketing, production_services, staff, leadership, operations, finance, technology, compliance, supply_chain] each as array of {name, facts string[], deductions string[], summary}."
+        " external: object with keys [political, economic, social, technological, legal, environmental] (PESTLE) each as array of {name, facts string[], deductions string[], summary}."
     )
     context = json.dumps(aggregated, ensure_ascii=False)
     prompt = (
@@ -275,6 +305,7 @@ def synthesize_strategy_plan(client: OllamaClient, aggregated: Dict[str, Any]) -
             "initiatives": [],
             "year_plan": {"year_1": {"objectives": []}, "year_2": {"objectives": []}, "year_3": {"objectives": []}},
             "action_plans": [],
+            "factor_tables": {"internal": {}, "external": {}},
             "_raw": response_text,
         }
 
@@ -384,6 +415,60 @@ def build_docx_from_plan(plan: Dict[str, Any], aggregated: Dict[str, Any]) -> by
                 doc.add_paragraph("Dependencies:")
                 add_bulleted_list(doc, ap.get("dependencies", []))
 
+    # Factor tables (internal and external)
+    factor_tables = plan.get("factor_tables", {}) or {}
+    internal_ft = factor_tables.get("internal", {}) or {}
+    external_ft = factor_tables.get("external", {}) or {}
+
+    def add_factor_section(title: str, groups: List[Dict[str, Any]]) -> None:
+        if not groups:
+            return
+        add_heading(doc, title, level=2)
+        for group in groups:
+            name = group.get("name") or "Factor"
+            facts = group.get("facts", []) or []
+            deductions = group.get("deductions", []) or []
+            summary = group.get("summary") or ""
+            if name:
+                doc.add_paragraph(name, style="List Number")
+            if facts:
+                doc.add_paragraph("Facts:")
+                add_bulleted_list(doc, facts)
+            if deductions:
+                doc.add_paragraph("Deductions:")
+                add_bulleted_list(doc, deductions)
+            if summary:
+                doc.add_paragraph(f"Summary: {summary}")
+
+    if internal_ft:
+        add_heading(doc, "Internal Factors", level=2)
+        for key, title in [
+            ("customer_demographics", "Customer Demographics"),
+            ("business_activities_cost", "Business Activities & Cost"),
+            ("marketing", "Marketing"),
+            ("production_services", "Production / Services"),
+            ("staff", "Staff"),
+            ("leadership", "Leadership"),
+            ("operations", "Operations"),
+            ("finance", "Finance"),
+            ("technology", "Technology"),
+            ("compliance", "Compliance"),
+            ("supply_chain", "Supply Chain"),
+        ]:
+            add_factor_section(title, internal_ft.get(key, []) or [])
+
+    if external_ft:
+        add_heading(doc, "External Factors (PESTLE)", level=2)
+        for key, title in [
+            ("political", "Political"),
+            ("economic", "Economic"),
+            ("social", "Social"),
+            ("technological", "Technological"),
+            ("legal", "Legal"),
+            ("environmental", "Environmental"),
+        ]:
+            add_factor_section(title, external_ft.get(key, []) or [])
+
     add_heading(doc, "Appendix: Analysis Summary", level=2)
     facts = aggregated.get("facts", [])
     deductions = aggregated.get("deductions", [])
@@ -428,6 +513,8 @@ def run_app() -> None:
         connect_timeout = st.number_input("Connect timeout (s)", min_value=1.0, max_value=60.0, value=10.0, step=1.0)
         read_timeout = st.number_input("Read timeout (s)", min_value=10.0, max_value=600.0, value=180.0, step=10.0)
         max_retries = st.slider("HTTP retries", 0, 5, 2)
+        stream_mode = st.toggle("Stream responses", value=True)
+        num_predict = st.slider("Max tokens to generate", 256, 4096, 1024, 128)
         st.session_state["ollama_base"] = base_url
         st.session_state["ollama_model"] = model
 
@@ -471,6 +558,8 @@ def run_app() -> None:
                 connect_timeout=float(connect_timeout),
                 read_timeout=float(read_timeout),
                 max_retries=int(max_retries),
+                stream=bool(stream_mode),
+                num_predict=int(num_predict),
             )
         )
 
@@ -533,6 +622,53 @@ def run_app() -> None:
         st.write(plan.get("initiatives", []))
         st.markdown("**Year Plan**")
         st.write(plan.get("year_plan", {}))
+
+        # Factor tables rendering
+        st.markdown("**Factor Tables**")
+        factor_tables = plan.get("factor_tables", {}) or {}
+        internal_ft = factor_tables.get("internal", {}) or {}
+        external_ft = factor_tables.get("external", {}) or {}
+
+        def render_factor_group(title: str, groups: List[Dict[str, Any]]):
+            if not groups:
+                return
+            st.markdown(f"### {title}")
+            rows: List[Dict[str, Any]] = []
+            for g in groups:
+                rows.append(
+                    {
+                        "name": g.get("name"),
+                        "facts": "; ".join(g.get("facts", []) or []),
+                        "deductions": "; ".join(g.get("deductions", []) or []),
+                        "summary": g.get("summary", ""),
+                    }
+                )
+            if rows:
+                df = pd.DataFrame(rows, columns=["name", "facts", "deductions", "summary"])
+                st.dataframe(df, use_container_width=True)
+
+        if internal_ft:
+            st.markdown("#### Internal Factors")
+            render_factor_group("Customer Demographics", internal_ft.get("customer_demographics", []) or [])
+            render_factor_group("Business Activities & Cost", internal_ft.get("business_activities_cost", []) or [])
+            render_factor_group("Marketing", internal_ft.get("marketing", []) or [])
+            render_factor_group("Production / Services", internal_ft.get("production_services", []) or [])
+            render_factor_group("Staff", internal_ft.get("staff", []) or [])
+            render_factor_group("Leadership", internal_ft.get("leadership", []) or [])
+            render_factor_group("Operations", internal_ft.get("operations", []) or [])
+            render_factor_group("Finance", internal_ft.get("finance", []) or [])
+            render_factor_group("Technology", internal_ft.get("technology", []) or [])
+            render_factor_group("Compliance", internal_ft.get("compliance", []) or [])
+            render_factor_group("Supply Chain", internal_ft.get("supply_chain", []) or [])
+
+        if external_ft:
+            st.markdown("#### External Factors (PESTLE)")
+            render_factor_group("Political", external_ft.get("political", []) or [])
+            render_factor_group("Economic", external_ft.get("economic", []) or [])
+            render_factor_group("Social", external_ft.get("social", []) or [])
+            render_factor_group("Technological", external_ft.get("technological", []) or [])
+            render_factor_group("Legal", external_ft.get("legal", []) or [])
+            render_factor_group("Environmental", external_ft.get("environmental", []) or [])
 
         docx_bytes = build_docx_from_plan(plan, aggregated)
         st.download_button(
