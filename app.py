@@ -244,30 +244,27 @@ def aggregate_chunk_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
                 by_name[key] = merge_row({}, g)
         return list(by_name.values())
 
-    internal_keys = [
-        "customer_demographics",
-        "business_activities_cost",
-        "marketing",
-        "production_services",
-        "staff",
-        "leadership",
-        "operations",
-        "finance",
-        "technology",
-        "compliance",
-        "supply_chain",
-    ]
-    external_keys = ["political", "economic", "social", "technological", "legal", "environmental"]
-
     aggregated_ft: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"internal": {}, "external": {}}
     raw_responses: List[str] = []
 
     for r in results:
         ft = (r.get("factor_tables") or {"internal": {}, "external": {}})
-        for side, keys in [("internal", internal_keys), ("external", external_keys)]:
-            section = ft.get(side, {}) or {}
-            for k in keys:
-                merged = merge_groups(aggregated_ft[side].get(k, []) or [], section.get(k, []) or [])
+        if not isinstance(ft, dict):
+            ft = {"internal": {}, "external": {}}
+        for side in ("internal", "external"):
+            section = ft.get(side) or {}
+            # If the section is a list, treat as uncategorized
+            if isinstance(section, list):
+                merged = merge_groups(aggregated_ft[side].get("uncategorized", []) or [], section)
+                if merged:
+                    aggregated_ft[side]["uncategorized"] = merged
+                continue
+            if not isinstance(section, dict):
+                continue
+            # Merge all keys present, not only the expected ones
+            for k, v in section.items():
+                groups_list = v if isinstance(v, list) else []
+                merged = merge_groups(aggregated_ft[side].get(k, []) or [], groups_list)
                 if merged:
                     aggregated_ft[side][k] = merged
         raw = r.get("_raw")
@@ -465,6 +462,7 @@ def build_docx_from_plan(plan: Dict[str, Any], aggregated: Dict[str, Any]) -> by
             ("technology", "Technology"),
             ("compliance", "Compliance"),
             ("supply_chain", "Supply Chain"),
+            ("uncategorized", "Uncategorized"),
         ]:
             add_factor_section(title, internal_ft.get(key, []) or [])
 
@@ -477,6 +475,7 @@ def build_docx_from_plan(plan: Dict[str, Any], aggregated: Dict[str, Any]) -> by
             ("technological", "Technological"),
             ("legal", "Legal"),
             ("environmental", "Environmental"),
+            ("uncategorized", "Uncategorized"),
         ]:
             add_factor_section(title, external_ft.get(key, []) or [])
 
@@ -620,26 +619,34 @@ def run_app() -> None:
 
         if internal_ft:
             st.markdown("#### Internal Factors")
-            render_factor_group("Customer Demographics", internal_ft.get("customer_demographics", []) or [])
-            render_factor_group("Business Activities & Cost", internal_ft.get("business_activities_cost", []) or [])
-            render_factor_group("Marketing", internal_ft.get("marketing", []) or [])
-            render_factor_group("Production / Services", internal_ft.get("production_services", []) or [])
-            render_factor_group("Staff", internal_ft.get("staff", []) or [])
-            render_factor_group("Leadership", internal_ft.get("leadership", []) or [])
-            render_factor_group("Operations", internal_ft.get("operations", []) or [])
-            render_factor_group("Finance", internal_ft.get("finance", []) or [])
-            render_factor_group("Technology", internal_ft.get("technology", []) or [])
-            render_factor_group("Compliance", internal_ft.get("compliance", []) or [])
-            render_factor_group("Supply Chain", internal_ft.get("supply_chain", []) or [])
+            for key, title in [
+                ("customer_demographics", "Customer Demographics"),
+                ("business_activities_cost", "Business Activities & Cost"),
+                ("marketing", "Marketing"),
+                ("production_services", "Production / Services"),
+                ("staff", "Staff"),
+                ("leadership", "Leadership"),
+                ("operations", "Operations"),
+                ("finance", "Finance"),
+                ("technology", "Technology"),
+                ("compliance", "Compliance"),
+                ("supply_chain", "Supply Chain"),
+                ("uncategorized", "Uncategorized"),
+            ]:
+                render_factor_group(title, internal_ft.get(key, []) or [])
 
         if external_ft:
             st.markdown("#### External Factors (PESTLE)")
-            render_factor_group("Political", external_ft.get("political", []) or [])
-            render_factor_group("Economic", external_ft.get("economic", []) or [])
-            render_factor_group("Social", external_ft.get("social", []) or [])
-            render_factor_group("Technological", external_ft.get("technological", []) or [])
-            render_factor_group("Legal", external_ft.get("legal", []) or [])
-            render_factor_group("Environmental", external_ft.get("environmental", []) or [])
+            for key, title in [
+                ("political", "Political"),
+                ("economic", "Economic"),
+                ("social", "Social"),
+                ("technological", "Technological"),
+                ("legal", "Legal"),
+                ("environmental", "Environmental"),
+                ("uncategorized", "Uncategorized"),
+            ]:
+                render_factor_group(title, external_ft.get(key, []) or [])
 
         st.subheader("Synthesis: Strategic Plan")
         with st.spinner("Synthesizing plan..."):
