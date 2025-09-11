@@ -128,6 +128,26 @@ def export_docx(issue_text: str, frameworks: List[str], visions: List[str], chos
     return buf.read()
 
 
+def export_selected_docx(selected_vision: str, mission: str, goals: List[str]) -> bytes:
+    doc = Document()
+    doc.add_heading('Selected Strategy', level=1)
+
+    doc.add_heading('Vision', level=2)
+    doc.add_paragraph(selected_vision)
+
+    doc.add_heading('Mission', level=2)
+    doc.add_paragraph(mission)
+
+    doc.add_heading('Goals', level=2)
+    for g in goals:
+        doc.add_paragraph(g, style='List Number')
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def extract_docx_text(file) -> str:
     """Extract text from a .docx file, including paragraphs and table cells."""
     try:
@@ -270,17 +290,34 @@ if mission or goals:
         for i, g in enumerate(goals, start=1):
             st.markdown(f"{i}. {g}")
 
-    content = export_docx(
-        issue_text=st.session_state.get("issue_text", ""),
-        frameworks=st.session_state.get("frameworks", []),
-        visions=st.session_state.get("visions", []),
-        chosen_idx=st.session_state.get("vision_idx", 0),
+    # Selected-only export
+    selected_idx = st.session_state.get("vision_idx", 0)
+    visions_list: List[str] = st.session_state.get("visions", [])
+    selected_vision = visions_list[selected_idx] if visions_list else ""
+    selected_content = export_selected_docx(
+        selected_vision=selected_vision,
         mission=mission or "",
         goals=goals,
     )
     st.download_button(
-        label="Download analysis.docx",
-        data=content,
+        label="Download selected strategy.docx",
+        data=selected_content,
+        file_name="selected_strategy.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    # Full analysis export
+    full_content = export_docx(
+        issue_text=st.session_state.get("issue_text", ""),
+        frameworks=st.session_state.get("frameworks", []),
+        visions=st.session_state.get("visions", []),
+        chosen_idx=selected_idx,
+        mission=mission or "",
+        goals=goals,
+    )
+    st.download_button(
+        label="Download full analysis.docx",
+        data=full_content,
         file_name="analysis.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
