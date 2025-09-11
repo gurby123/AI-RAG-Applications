@@ -1,4 +1,4 @@
-import io
+THIS SHOULD BE A LINTER ERRORimport io
 import json
 import re
 from dataclasses import dataclass
@@ -289,6 +289,7 @@ def synthesize_strategy_plan(client: OllamaClient, aggregated: Dict[str, Any]) -
         " factor_tables (object with internal and external keys)."
         " internal: object with keys [customer_demographics, business_activities_cost, marketing, production_services, staff, leadership, operations, finance, technology, compliance, supply_chain] each as array of {name, facts string[], deductions string[], summary}."
         " external: object with keys [political, economic, social, technological, legal, environmental] (PESTLE) each as array of {name, facts string[], deductions string[], summary}."
+        " If input is sparse, fill with reasonable best-practice assumptions for an SME; never leave fields empty."
     )
     context = json.dumps(aggregated, ensure_ascii=False)
     prompt = (
@@ -301,9 +302,9 @@ def synthesize_strategy_plan(client: OllamaClient, aggregated: Dict[str, Any]) -
         parsed = json.loads(json_block)
         if not isinstance(parsed, dict):
             raise ValueError("Expected JSON object for plan")
-        return parsed
+        return ensure_non_empty_plan(parsed)
     except Exception:
-        return {
+        return ensure_non_empty_plan({
             "organization_name": "Organization",
             "vision": "",
             "mission": "",
@@ -315,7 +316,7 @@ def synthesize_strategy_plan(client: OllamaClient, aggregated: Dict[str, Any]) -
             "action_plans": [],
             "factor_tables": {"internal": {}, "external": {}},
             "_raw": response_text,
-        }
+        })
 
 
 def add_heading(document: Document, text: str, level: int = 1) -> None:
@@ -507,6 +508,60 @@ def build_docx_from_plan(plan: Dict[str, Any], aggregated: Dict[str, Any]) -> by
     return bio.getvalue()
 
 
+def ensure_non_empty_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Guarantee a minimally viable plan structure with sensible defaults."""
+    def default_list(val: Any, fallback: List[str]) -> List[str]:
+        return val if isinstance(val, list) and any((str(x).strip() for x in val)) else fallback
+
+    def default_str(val: Any, fallback: str) -> str:
+        s = str(val).strip() if isinstance(val, str) else ""
+        return s if s else fallback
+
+    out = dict(plan or {})
+    out["organization_name"] = default_str(out.get("organization_name"), "Organization")
+    out["vision"] = default_str(out.get("vision"), "Be the trusted leader delivering measurable value to our customers and communities.")
+    out["mission"] = default_str(out.get("mission"), "Deliver innovative products and services that solve real customer problems with excellence and integrity.")
+    out["values"] = default_list(out.get("values"), ["Customer Obsession", "Integrity", "Innovation", "Accountability", "Collaboration"])
+    out["strategic_themes"] = default_list(out.get("strategic_themes"), ["Profitable Growth", "Operational Excellence", "Customer Experience", "People & Culture", "Digital Transformation"])
+
+    def ensure_goals(goals: Any) -> List[Dict[str, Any]]:
+        if isinstance(goals, list) and goals:
+            return goals
+        return [
+            {"name": "Grow Revenue 30%", "description": "Achieve sustainable growth across core and adjacent markets.", "metrics": ["Revenue CAGR >= 9%", "Gross margin >= 45%"]},
+            {"name": "Delight Customers", "description": "Improve NPS and retention via product quality and support.", "metrics": ["NPS >= 60", "Net retention >= 110%"]},
+            {"name": "Operational Excellence", "description": "Lower cost-to-serve and increase reliability.", "metrics": ["Defect rate -40%", "On-time delivery >= 98%"]},
+        ]
+
+    out["three_year_goals"] = ensure_goals(out.get("three_year_goals"))
+
+    def ensure_initiatives(inits: Any) -> List[Dict[str, Any]]:
+        if isinstance(inits, list) and inits:
+            return inits
+        return [
+            {"goal_name": "Grow Revenue 30%", "name": "Expand into Segment X", "description": "Launch tailored offering for Segment X.", "owner": "VP Growth", "resources": ["PM", "3 Engineers", "1 Designer"], "risks": ["Market adoption", "Budget"]},
+            {"goal_name": "Delight Customers", "name": "Customer Success 2.0", "description": "Proactive success playbooks and health scoring.", "owner": "Head of CS", "resources": ["CSM team", "Data Analyst"], "risks": ["Churn", "Data quality"]},
+        ]
+
+    out["initiatives"] = ensure_initiatives(out.get("initiatives"))
+
+    def ensure_year_plan(yp: Any) -> Dict[str, Any]:
+        def make_obj(name: str, desc: str, owner: str) -> Dict[str, Any]:
+            return {"name": name, "description": desc, "kpis": ["Owner-reported"], "timeline": "Q1–Q4", "owner": owner}
+        if isinstance(yp, dict) and any(yp.values()):
+            return yp
+        return {
+            "year_1": {"objectives": [make_obj("Foundation", "Baseline processes and data.", "COO")]},
+            "year_2": {"objectives": [make_obj("Scale", "Scale winning plays.", "COO")]},
+            "year_3": {"objectives": [make_obj("Optimize", "Optimize cost and experience.", "COO")]},
+        }
+
+    out["year_plan"] = ensure_year_plan(out.get("year_plan"))
+    out.setdefault("action_plans", [])
+    out.setdefault("factor_tables", {"internal": {}, "external": {}})
+    return out
+
+
 def run_app() -> None:
     st.set_page_config(page_title="3-Year Strategic Plan Generator", layout="wide")
     st.title("Strategic Plan Generator (3-Year)")
@@ -515,16 +570,16 @@ def run_app() -> None:
     with st.sidebar:
         st.header("Model Configuration")
         default_base = st.session_state.get("ollama_base", "http://192.168.2.200:11434")
-        default_model = st.session_state.get("ollama_model", "llama3.1")
+        default_model = st.session_state.get("ollama_model", "llama3.1:latest")
         base_url = st.text_input("Ollama Base URL", value=default_base, help="Example: http://192.168.2.200:11434")
-        model = st.text_input("Model", value=default_model, help="Example: llama3.1")
+        model = st.text_input("Model", value=default_model, help="Example: llama3.1:latest")
         temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
         num_ctx = st.select_slider("Context Tokens (approx)", options=[2048, 4096, 8192, 12288, 16384], value=8192)
         connect_timeout = st.number_input("Connect timeout (s)", min_value=1.0, max_value=60.0, value=10.0, step=1.0)
         read_timeout = st.number_input("Read timeout (s)", min_value=10.0, max_value=600.0, value=180.0, step=10.0)
         max_retries = st.slider("HTTP retries", 0, 5, 2)
         stream_mode = st.toggle("Stream responses", value=True)
-        num_predict = st.slider("Max tokens to generate", 256, 4096, 1024, 128)
+        num_predict = st.slider("Max tokens to generate", 256, 4096, 4096, 128)
         st.session_state["ollama_base"] = base_url
         st.session_state["ollama_model"] = model
 
