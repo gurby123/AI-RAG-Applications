@@ -1,4 +1,4 @@
-THIS SHOULD BE A LINTER ERRORimport io
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -177,7 +177,7 @@ def call_analysis_for_chunk(client: OllamaClient, chunk_text_value: str) -> Dict
     )
     prompt = (
         "From the following business context CHUNK, produce factor rows, each with:"
-        " name (string), facts (string[]), deductions (string[]), summary (string)."
+        " name (string), facts (string[]), deductions (string[]), summary (string), conclusion (string)."
         "\nOrganize as strict JSON under factor_tables with two objects: internal and external."
         "\ninternal has keys: customer_demographics, business_activities_cost, marketing, production_services, staff, leadership, operations, finance, technology, compliance, supply_chain."
         "\nexternal has keys: political, economic, social, technological, legal, environmental."
@@ -221,12 +221,14 @@ def aggregate_chunk_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     def merge_row(existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
         if not existing:
-            existing = {"name": new.get("name") or "Factor", "facts": [], "deductions": [], "summary": ""}
+            existing = {"name": new.get("name") or "Factor", "facts": [], "deductions": [], "summary": "", "conclusion": ""}
         existing["facts"] = merge_lists(existing.get("facts", []), new.get("facts", []) or [])
         existing["deductions"] = merge_lists(existing.get("deductions", []), new.get("deductions", []) or [])
         # Prefer longer summary
         summaries = [existing.get("summary") or "", new.get("summary") or ""]
         existing["summary"] = max(summaries, key=lambda s: len(s))
+        conclusions = [existing.get("conclusion") or "", new.get("conclusion") or ""]
+        existing["conclusion"] = max(conclusions, key=lambda s: len(s))
         if not existing.get("name") and new.get("name"):
             existing["name"] = new.get("name")
         return existing
@@ -287,8 +289,8 @@ def synthesize_strategy_plan(client: OllamaClient, aggregated: Dict[str, Any]) -
         " year_plan (object with year_1, year_2, year_3 each with objectives: object[] {name, description, kpis string[], timeline, owner}),"
         " action_plans (object[] with: objective_name, actions string[], owner, timeline, dependencies string[]),"
         " factor_tables (object with internal and external keys)."
-        " internal: object with keys [customer_demographics, business_activities_cost, marketing, production_services, staff, leadership, operations, finance, technology, compliance, supply_chain] each as array of {name, facts string[], deductions string[], summary}."
-        " external: object with keys [political, economic, social, technological, legal, environmental] (PESTLE) each as array of {name, facts string[], deductions string[], summary}."
+        " internal: object with keys [customer_demographics, business_activities_cost, marketing, production_services, staff, leadership, operations, finance, technology, compliance, supply_chain] each as array of {name, facts string[], deductions string[], summary, conclusion}."
+        " external: object with keys [political, economic, social, technological, legal, environmental] (PESTLE) each as array of {name, facts string[], deductions string[], summary, conclusion}."
         " If input is sparse, fill with reasonable best-practice assumptions for an SME; never leave fields empty."
     )
     context = json.dumps(aggregated, ensure_ascii=False)
@@ -438,6 +440,7 @@ def build_docx_from_plan(plan: Dict[str, Any], aggregated: Dict[str, Any]) -> by
             facts = group.get("facts", []) or []
             deductions = group.get("deductions", []) or []
             summary = group.get("summary") or ""
+            conclusion = group.get("conclusion") or ""
             if name:
                 doc.add_paragraph(name, style="List Number")
             if facts:
@@ -448,6 +451,8 @@ def build_docx_from_plan(plan: Dict[str, Any], aggregated: Dict[str, Any]) -> by
                 add_bulleted_list(doc, deductions)
             if summary:
                 doc.add_paragraph(f"Summary: {summary}")
+            if conclusion:
+                doc.add_paragraph(f"Conclusion: {conclusion}")
 
     if internal_ft:
         add_heading(doc, "Internal Factors", level=2)
@@ -666,10 +671,11 @@ def run_app() -> None:
                         "facts": "; ".join(g.get("facts", []) or []),
                         "deductions": "; ".join(g.get("deductions", []) or []),
                         "summary": g.get("summary", ""),
+                        "conclusion": g.get("conclusion", ""),
                     }
                 )
             if rows:
-                df = pd.DataFrame(rows, columns=["name", "facts", "deductions", "summary"])
+                df = pd.DataFrame(rows, columns=["name", "facts", "deductions", "summary", "conclusion"])
                 st.dataframe(df, use_container_width=True)
 
         if internal_ft:
