@@ -1,4 +1,4 @@
-import io
+THIS SHOULD BE A LINTER ERRORimport io
 import json
 import re
 from dataclasses import dataclass
@@ -530,7 +530,7 @@ def run_app() -> None:
 
         st.divider()
         st.header("Chunking")
-        max_chars = st.slider("Max chars per chunk", 1000, 6000, 3000, 250)
+        max_chars = st.slider("Max chars per chunk", 200, 1200, 1200, 50)
         overlap = st.slider("Overlap chars", 0, 1000, 300, 50)
 
     st.subheader("Input Business Context")
