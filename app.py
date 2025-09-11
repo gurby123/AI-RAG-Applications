@@ -128,6 +128,26 @@ def export_docx(issue_text: str, frameworks: List[str], visions: List[str], chos
     return buf.read()
 
 
+def extract_docx_text(file) -> str:
+    """Extract text from a .docx file, including paragraphs and table cells."""
+    try:
+        doc = Document(file)
+    except Exception:
+        return ""
+    chunks: List[str] = []
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if text:
+            chunks.append(text)
+    for table in getattr(doc, "tables", []):
+        for row in table.rows:
+            for cell in row.cells:
+                text = cell.text.strip()
+                if text:
+                    chunks.append(text)
+    return "\n".join(chunks)
+
+
 st.set_page_config(page_title="Vision & Strategy Synthesizer", page_icon="🧠", layout="wide")
 
 st.title("🧠 Vision & Strategy Synthesizer")
@@ -138,9 +158,22 @@ with st.sidebar:
     model_val = st.text_input("Model", value=DEFAULT_OLLAMA_MODEL, key="ollama_model")
     temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
 
-st.markdown("Enter your business issues, select one or more frameworks, and generate strategic options.")
+st.markdown("Enter your business issues, optionally upload a Word document, select frameworks, and generate strategic options.")
 
 issue_text = st.text_area("Business issues / context", height=180, placeholder="Describe the current situation, constraints, and opportunities...")
+
+uploaded = st.file_uploader("Upload Word document (.docx)", type=["docx"], accept_multiple_files=False)
+if uploaded is not None:
+    uploaded_text = extract_docx_text(uploaded)
+    st.session_state["uploaded_issue_text"] = uploaded_text
+    with st.expander("Preview uploaded document", expanded=False):
+        if uploaded_text:
+            st.write(uploaded_text[:4000])
+        else:
+            st.write("(No extractable text found)")
+
+include_uploaded_default = bool(st.session_state.get("uploaded_issue_text"))
+include_uploaded = st.checkbox("Include uploaded document text", value=include_uploaded_default, key="include_uploaded") if include_uploaded_default else False
 
 cols = st.columns(3)
 selected_frameworks: List[str] = []
@@ -150,10 +183,16 @@ for i, fw in enumerate(FRAMEWORKS):
         if st.checkbox(fw, value=False, key=f"fw_{i}"):
             selected_frameworks.append(fw)
 
-if st.button("Generate vision options", type="primary", disabled=not issue_text or not selected_frameworks):
+uploaded_text_state = st.session_state.get("uploaded_issue_text", "")
+combined_issue_text = (issue_text or "")
+if include_uploaded and uploaded_text_state:
+    combined_issue_text = (combined_issue_text + ("\n\n" if combined_issue_text else "") + uploaded_text_state)
+
+disable_generate = (not combined_issue_text) or (not selected_frameworks)
+if st.button("Generate vision options", type="primary", disabled=disable_generate):
     with st.spinner("Generating vision statements..."):
         try:
-            prompt = build_vision_prompt(issue_text, selected_frameworks)
+            prompt = build_vision_prompt(combined_issue_text, selected_frameworks)
             resp = ollama_generate(
                 host=st.session_state.get("ollama_host", DEFAULT_OLLAMA_HOST),
                 model=st.session_state.get("ollama_model", DEFAULT_OLLAMA_MODEL),
@@ -165,7 +204,7 @@ if st.button("Generate vision options", type="primary", disabled=not issue_text 
             if len(visions) < 3:
                 visions = [ln.strip("-• ") for ln in resp.split("\n") if ln.strip()][:3]
             st.session_state["visions"] = visions
-            st.session_state["issue_text"] = issue_text
+            st.session_state["issue_text"] = combined_issue_text
             st.session_state["frameworks"] = selected_frameworks
             st.session_state["model_settings"] = {
                 "ollama_host": st.session_state.get("ollama_host", DEFAULT_OLLAMA_HOST),
