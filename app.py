@@ -56,13 +56,13 @@ def build_vision_prompt(issue_text: str, selected_frameworks: List[str]) -> str:
     )
     return (
         "You are a strategy consultant. Given the business issues and the chosen frameworks, "
-        "produce at least 3 distinct, high-quality vision statements (numbered list).\n\n"
+        "produce exactly 3 distinct vision statements as a numbered list (1., 2., 3.).\n\n"
         f"Business issues:\n{issue_text}\n\n"
         f"Frameworks to apply:\n{frameworks_block}\n\n"
         "Instructions:\n"
-        "- Each vision statement should be concise (1-2 sentences), inspiring, and future-oriented.\n"
-        "- Ensure each is meaningfully different (not minor rewordings).\n"
-        "- Tailor to the issues and the frameworks' lenses.\n"
+        "- Each vision statement must be ONE sentence only (<= 25 words).\n"
+        "- Ensure each is meaningfully different.\n"
+        "- Output ONLY the three numbered items, no preface or epilogue.\n"
     )
 
 
@@ -81,6 +81,18 @@ def parse_numbered_list(text: str) -> List[str]:
     if current:
         items.append(" ".join(current).strip())
     return [it for it in items if it]
+
+
+def first_sentence(text: str) -> str:
+    """Return text up to the first sentence terminator (.!?), inclusive; else the whole text."""
+    for ch in ".!?":
+        pass
+    sentence_end = None
+    for idx, ch in enumerate(text):
+        if ch in ".!?":
+            sentence_end = idx
+            break
+    return text[: sentence_end + 1].strip() if sentence_end is not None else text.strip()
 
 
 def build_mission_goals_prompt(selected_vision: str, issue_text: str, selected_frameworks: List[str]) -> str:
@@ -209,7 +221,7 @@ if include_uploaded and uploaded_text_state:
     combined_issue_text = (combined_issue_text + ("\n\n" if combined_issue_text else "") + uploaded_text_state)
 
 disable_generate = (not combined_issue_text) or (not selected_frameworks)
-if st.button("Generate vision options", type="primary", disabled=disable_generate):
+if st.button("Generate 3 one-sentence visions", type="primary", disabled=disable_generate):
     with st.spinner("Generating vision statements..."):
         try:
             prompt = build_vision_prompt(combined_issue_text, selected_frameworks)
@@ -222,7 +234,8 @@ if st.button("Generate vision options", type="primary", disabled=disable_generat
             )
             visions = parse_numbered_list(resp)
             if len(visions) < 3:
-                visions = [ln.strip("-• ") for ln in resp.split("\n") if ln.strip()][:3]
+                visions = [ln.strip("-• ") for ln in resp.split("\n") if ln.strip()]
+            visions = [first_sentence(v) for v in visions][:3]
             st.session_state["visions"] = visions
             st.session_state["issue_text"] = combined_issue_text
             st.session_state["frameworks"] = selected_frameworks
