@@ -55,9 +55,8 @@ def build_vision_prompt(issue_text: str, selected_frameworks: List[str]) -> str:
         f"- {fw}: {FRAMEWORK_DESCRIPTIONS.get(fw, '')}" for fw in selected_frameworks
     )
     return (
-        "You are a strategy consultant. Given the business issues and the chosen frameworks, "
-        "produce exactly 3 distinct vision statements as a numbered list (1., 2., 3.).\n\n"
-        f"Business issues:\n{issue_text}\n\n"
+        "You are a strategy consultant. From the text below (which may include uploaded document content), first infer 5–10 key concepts/themes, then use those concepts with the chosen frameworks to produce exactly 3 distinct vision statements as a numbered list (1., 2., 3.). Do not print the concepts; only output the three numbered items.\n\n"
+        f"Business issues and/or document text:\n{issue_text}\n\n"
         f"Frameworks to apply:\n{frameworks_block}\n\n"
         "Vision statements should be: forward-looking; motivating and inspirational; reflective of culture and core values; aimed at future benefits; and define the organization's destination and reason for existence.\n"
         "Consider: major issues/problems; major strengths/assets; desired changes; purpose of the organization; the kind of organization to create; the dream/vision; hope for a better future; inspiration for effective action; a basis for action planning; and why these issues matter.\n"
@@ -65,7 +64,7 @@ def build_vision_prompt(issue_text: str, selected_frameworks: List[str]) -> str:
         "Style examples (do not copy): 'To become the world’s most loved, most flown, and most profitable airline.'; 'To create a better everyday life for many people.'; 'Create the most compelling car company of the 21st century by driving the world’s transition to electric vehicles.'\n\n"
         "Instructions:\n"
         "- Each vision statement must be ONE sentence only (<= 25 words).\n"
-        "- Ensure each is meaningfully different.\n"
+        "- Ensure each is meaningfully different and grounded in the inferred key concepts.\n"
         "- Output ONLY the three numbered items, no preface or epilogue.\n"
     )
 
@@ -102,19 +101,19 @@ def first_sentence(text: str) -> str:
 def build_mission_goals_prompt(selected_vision: str, issue_text: str, selected_frameworks: List[str]) -> str:
     frameworks_block = ", ".join(selected_frameworks)
     return (
-        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals.\n\n"
+        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals. The mission must operationalize the vision; each goal must clearly align with and advance both the vision and the mission.\n\n"
         f"Selected vision (one sentence):\n{selected_vision}\n\n"
-        f"Key business issues:\n{issue_text}\n\n"
+        f"Key business issues and/or document text:\n{issue_text}\n\n"
         f"Framework lenses to reflect: {frameworks_block}.\n\n"
         "Mission guidance:\n"
-        "- The mission describes what the organization will do and why, for whom, and how (the differentiating approach).\n"
-        "- It should be concise (prefer 1 sentence, at most 2), outcome-oriented, and inclusive of goals and stakeholders.\n"
-        "- It is the overarching expression of purpose that will drive goals, initiatives, and objectives.\n"
-        "Style examples (do not copy): 'To be the best quick service restaurant experience...'; 'Tesla’s mission is to accelerate the world’s transition to sustainable energy.'; 'We strive to offer our customers the lowest possible prices, the best available selection, and the utmost convenience.'\n\n"
+        "- Describe what the organization will do and why, for whom, and how (the differentiating approach).\n"
+        "- Concise (prefer 1 sentence, at most 2), outcome-oriented, inclusive of goals and stakeholders.\n"
+        "- Overarching expression of purpose that will drive goals, initiatives, and objectives.\n\n"
         "Goals guidance:\n"
         "- Provide at least 5 higher-order strategic goals aligned to the mission and vision, looking ~5 years out.\n"
         "- Keep goals generic at this stage (not KPIs), ambitious, challenging, inspiring, and avoid a laundry list.\n"
-        "- Derive from mission, vision, and capabilities; do not copy from other organizations.\n\n"
+        "- Derive from mission, vision, and capabilities; do not copy from other organizations.\n"
+        "- Ensure each goal is traceably aligned to the mission and advances the vision.\n\n"
         "Output format (strict):\n"
         "Mission: <one concise mission statement (1–2 sentences)>\n"
         "Goals:\n"
