@@ -102,13 +102,21 @@ def first_sentence(text: str) -> str:
 def build_mission_goals_prompt(selected_vision: str, issue_text: str, selected_frameworks: List[str]) -> str:
     frameworks_block = ", ".join(selected_frameworks)
     return (
-        "You are a strategy consultant. Based on the selected vision statement, "
-        "draft a mission statement and at least 5 strategic goals.\n\n"
-        f"Selected vision:\n{selected_vision}\n\n"
+        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals.\n\n"
+        f"Selected vision (one sentence):\n{selected_vision}\n\n"
         f"Key business issues:\n{issue_text}\n\n"
         f"Framework lenses to reflect: {frameworks_block}.\n\n"
-        "Output format:\n"
-        "Mission: <one concise mission statement>\n"
+        "Mission guidance:\n"
+        "- The mission describes what the organization will do and why, for whom, and how (the differentiating approach).\n"
+        "- It should be concise (prefer 1 sentence, at most 2), outcome-oriented, and inclusive of goals and stakeholders.\n"
+        "- It is the overarching expression of purpose that will drive goals, initiatives, and objectives.\n"
+        "Style examples (do not copy): 'To be the best quick service restaurant experience...'; 'Tesla’s mission is to accelerate the world’s transition to sustainable energy.'; 'We strive to offer our customers the lowest possible prices, the best available selection, and the utmost convenience.'\n\n"
+        "Goals guidance:\n"
+        "- Provide at least 5 higher-order strategic goals aligned to the mission and vision, looking ~5 years out.\n"
+        "- Keep goals generic at this stage (not KPIs), ambitious, challenging, inspiring, and avoid a laundry list.\n"
+        "- Derive from mission, vision, and capabilities; do not copy from other organizations.\n\n"
+        "Output format (strict):\n"
+        "Mission: <one concise mission statement (1–2 sentences)>\n"
         "Goals:\n"
         "1. <goal one>\n2. <goal two>\n3. <goal three>\n4. <goal four>\n5. <goal five>\n"
     )
