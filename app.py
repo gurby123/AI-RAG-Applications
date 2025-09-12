@@ -1,7 +1,7 @@
 import os
 import io
 import re
-from typing import List
+from typing import List, Dict
 
 import streamlit as st
 import requests
@@ -33,6 +33,18 @@ FRAMEWORK_DESCRIPTIONS = {
     "McKinsey 7S": "Align Strategy, Structure, Systems, Shared Values, Skills, Style, Staff.",
     "Burke-Litwin": "Diagnose org change via External Env., Leadership, Culture, Systems, etc.",
     "TRIZ": "Inventive problem solving using patterns of technical evolution and contradictions.",
+}
+
+FRAMEWORK_TIPS = {
+    "Reframing Thinking": "List assumptions to challenge and alternative frames.",
+    "Delphi": "What expert hypotheses or consensus themes might emerge?",
+    "SCAMPER": "Ideas for Substitute, Combine, Adapt, Modify, Put to other use, Eliminate, Reverse.",
+    "Blue Ocean": "What noncustomers, new value curves, or eliminate-reduce-raise-create actions?",
+    "Six Thinking Hats": "Facts, feelings, risks, benefits, creative options, process checks.",
+    "Balanced Scorecard": "Objectives across Financial, Customer, Internal Process, Learning & Growth.",
+    "McKinsey 7S": "Implications for Strategy, Structure, Systems, Shared Values, Skills, Style, Staff.",
+    "Burke-Litwin": "External drivers, leadership, culture, work unit climate, systems alignment.",
+    "TRIZ": "Contradictions to resolve, ideality, inventive principles to apply.",
 }
 
 
@@ -70,6 +82,19 @@ def build_vision_prompt(issue_text: str, selected_frameworks: List[str]) -> str:
     )
 
 
+def build_framework_vision_prompt(issue_text: str, framework: str, notes: str) -> str:
+    desc = FRAMEWORK_DESCRIPTIONS.get(framework, "")
+    tip = FRAMEWORK_TIPS.get(framework, "")
+    return (
+        f"Using the {framework} framework, generate exactly 3 one-sentence vision statements as a numbered list (1., 2., 3.) based on the text and notes below. Do not print any analysis, only the three items.\n\n"
+        f"Framework lens: {framework} — {desc}\n"
+        f"Guidance: {tip}\n\n"
+        f"Text/context:\n{issue_text}\n\n"
+        f"Framework notes:\n{notes}\n\n"
+        "Vision statements must be: forward-looking, inspiring, values-aligned, benefit-oriented, clearly defining destination and purpose; ONE sentence (<= 25 words) each; meaningfully distinct."
+    )
+
+
 def parse_numbered_list(text: str) -> List[str]:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     items: List[str] = []
@@ -88,7 +113,6 @@ def parse_numbered_list(text: str) -> List[str]:
 
 
 def first_sentence(text: str) -> str:
-    """Return text up to the first sentence terminator (.!?), inclusive; else the whole text."""
     for ch in ".!?":
         pass
     sentence_end = None
@@ -100,11 +124,9 @@ def first_sentence(text: str) -> str:
 
 
 def clean_mission_text(resp_text: str, mission_text: str) -> str:
-    """Strip placeholder labels and fall back to a meaningful sentence if needed."""
     cleaned = re.sub(r"^mission(?:\s*statement)?\s*[-:]*\s*", "", mission_text, flags=re.IGNORECASE).strip()
     placeholders = {"mission", "mission statement", "tbd", "placeholder", "n/a", "mission:", "mission statement:"}
     if cleaned.lower() in placeholders or len(cleaned.split()) < 3:
-        # Try to extract the first substantial line after 'Mission:'
         after = resp_text.split("Mission:", 1)[1] if "Mission:" in resp_text else resp_text
         for line in after.splitlines():
             s = re.sub(r"^mission(?:\s*statement)?\s*[-:]*\s*", "", line.strip(), flags=re.IGNORECASE).strip()
@@ -125,7 +147,6 @@ def is_meta_mission(text: str) -> bool:
     lower = t.lower()
     if not lower:
         return True
-    # Allow if it clearly starts like a mission
     if lower.startswith("our mission is") or lower.startswith("to "):
         return False
     meta_fragments = [
@@ -145,7 +166,6 @@ def is_meta_mission(text: str) -> bool:
     ]
     if any(frag in lower for frag in meta_fragments):
         return True
-    # Very short or ends without punctuation may indicate low quality
     if len(t.split()) < 4:
         return True
     return False
@@ -175,7 +195,6 @@ def generate_mission_only(host: str, model: str, vision: str, issue_text: str, t
         user_prompt=user_prompt,
         temperature=temperature,
     )
-    # Take first non-empty line
     for line in resp.splitlines():
         s = line.strip()
         if s:
@@ -257,6 +276,43 @@ def export_selected_docx(selected_vision: str, mission: str, goals: List[str]) -
     return buf.read()
 
 
+def export_multi_framework_docx(issue_text: str, frameworks_data: Dict[str, Dict[str, object]]) -> bytes:
+    doc = Document()
+    doc.add_heading('Multi-Framework Strategy Analysis', level=1)
+
+    doc.add_heading('Business Issues / Context', level=2)
+    doc.add_paragraph(issue_text)
+
+    for fw, data in frameworks_data.items():
+        doc.add_heading(fw, level=2)
+        notes = (data.get("notes") or "").strip()
+        if notes:
+            doc.add_heading('Framework Notes', level=3)
+            doc.add_paragraph(notes)
+        visions = data.get("visions") or []
+        if visions:
+            doc.add_heading('Vision Options', level=3)
+            selected_idx = data.get("selected_idx") or 0
+            for i, v in enumerate(visions, start=1):
+                p = doc.add_paragraph(f"{i}. {v}")
+                if i - 1 == selected_idx and p.runs:
+                    p.runs[0].bold = True
+        mission = data.get("mission") or ""
+        goals = data.get("goals") or []
+        if mission:
+            doc.add_heading('Mission Statement', level=3)
+            doc.add_paragraph(str(mission))
+        if goals:
+            doc.add_heading('Strategic Goals', level=3)
+            for g in goals:
+                doc.add_paragraph(str(g), style='List Number')
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def extract_docx_text(file) -> str:
     """Extract text from a .docx file, including paragraphs and table cells."""
     try:
@@ -317,6 +373,19 @@ combined_issue_text = (issue_text or "")
 if include_uploaded and uploaded_text_state:
     combined_issue_text = (combined_issue_text + ("\n\n" if combined_issue_text else "") + uploaded_text_state)
 
+# Framework template step
+st.subheader("Framework templates (optional)")
+if "framework_notes" not in st.session_state:
+    st.session_state["framework_notes"] = {}
+for fw in selected_frameworks:
+    with st.expander(f"{fw} template", expanded=False):
+        st.caption(FRAMEWORK_DESCRIPTIONS.get(fw, ""))
+        st.write(FRAMEWORK_TIPS.get(fw, ""))
+        st.session_state["framework_notes"][fw] = st.text_area(f"Notes for {fw}", key=f"notes_{fw}", height=120)
+
+# Existing single combined generation path
+st.markdown("---")
+st.subheader("Combined-framework synthesis")
 disable_generate = (not combined_issue_text) or (not selected_frameworks)
 if st.button("Generate 3 one-sentence visions", type="primary", disabled=disable_generate):
     with st.spinner("Generating vision statements..."):
@@ -383,7 +452,6 @@ if visions:
                     mission_raw = resp.split("\n", 1)[0].strip()
                 mission = clean_mission_text(resp, mission_raw)
                 if len(mission.split()) < 3 or is_meta_mission(mission):
-                    # Try mission-only regeneration
                     mission_regen = generate_mission_only(
                         host=st.session_state.get("ollama_host", DEFAULT_OLLAMA_HOST),
                         model=st.session_state.get("ollama_model", DEFAULT_OLLAMA_MODEL),
@@ -417,7 +485,6 @@ if mission or goals:
         for i, g in enumerate(goals, start=1):
             st.markdown(f"{i}. {g}")
 
-    # Selected-only export
     selected_idx = st.session_state.get("vision_idx", 0)
     visions_list: List[str] = st.session_state.get("visions", [])
     selected_vision = visions_list[selected_idx] if visions_list else ""
@@ -433,7 +500,6 @@ if mission or goals:
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
-    # Full analysis export
     full_content = export_docx(
         issue_text=st.session_state.get("issue_text", ""),
         frameworks=st.session_state.get("frameworks", []),
@@ -446,5 +512,128 @@ if mission or goals:
         label="Download full analysis.docx",
         data=full_content,
         file_name="analysis.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+# Per-framework generation
+st.markdown("---")
+st.subheader("Per-framework analysis")
+if "visions_by_fw" not in st.session_state:
+    st.session_state["visions_by_fw"] = {}
+if "vision_idx_by_fw" not in st.session_state:
+    st.session_state["vision_idx_by_fw"] = {}
+if "mission_goals_by_fw" not in st.session_state:
+    st.session_state["mission_goals_by_fw"] = {}
+
+pf_disabled = (not combined_issue_text) or (not selected_frameworks)
+if st.button("Generate 3 visions per selected framework", disabled=pf_disabled):
+    try:
+        for fw in selected_frameworks:
+            notes = (st.session_state["framework_notes"].get(fw) if "framework_notes" in st.session_state else "") or ""
+            prompt = build_framework_vision_prompt(combined_issue_text, fw, notes)
+            resp = ollama_generate(
+                host=st.session_state.get("ollama_host", DEFAULT_OLLAMA_HOST),
+                model=st.session_state.get("ollama_model", DEFAULT_OLLAMA_MODEL),
+                system_prompt="You are a world-class strategy advisor.",
+                user_prompt=prompt,
+                temperature=temperature,
+            )
+            visions_fw = parse_numbered_list(resp)
+            if len(visions_fw) < 3:
+                visions_fw = [ln.strip("-• ") for ln in resp.split("\n") if ln.strip()]
+            visions_fw = [first_sentence(v) for v in visions_fw][:3]
+            st.session_state["visions_by_fw"][fw] = visions_fw
+            if fw not in st.session_state["vision_idx_by_fw"]:
+                st.session_state["vision_idx_by_fw"][fw] = 0
+        st.success("Generated per-framework visions.")
+    except Exception as e:
+        st.error(f"Failed to generate per-framework visions: {e}")
+
+# Selection and mission/goals per framework
+for fw in selected_frameworks:
+    visions_fw = st.session_state["visions_by_fw"].get(fw, [])
+    if not visions_fw:
+        continue
+    st.markdown(f"**{fw} visions**")
+    key_idx = f"vision_idx_{fw}"
+    st.session_state["vision_idx_by_fw"][fw] = st.radio(
+        f"Select a vision for {fw}",
+        options=list(range(len(visions_fw))),
+        format_func=lambda i, vf=visions_fw: f"{i+1}. {vf[i]}",
+        index=st.session_state["vision_idx_by_fw"].get(fw, 0),
+        horizontal=False,
+        key=key_idx,
+    )
+
+if st.button("Develop missions and goals per framework"):
+    try:
+        for fw in selected_frameworks:
+            visions_fw = st.session_state["visions_by_fw"].get(fw, [])
+            if not visions_fw:
+                continue
+            sel_idx = st.session_state["vision_idx_by_fw"].get(fw, 0)
+            sel_idx = min(max(sel_idx, 0), len(visions_fw) - 1)
+            sel_vision = visions_fw[sel_idx]
+            prompt = build_mission_goals_prompt(
+                selected_vision=sel_vision,
+                issue_text=combined_issue_text,
+                selected_frameworks=[fw],
+            )
+            resp = ollama_generate(
+                host=st.session_state.get("ollama_host", DEFAULT_OLLAMA_HOST),
+                model=st.session_state.get("ollama_model", DEFAULT_OLLAMA_MODEL),
+                system_prompt="You are a world-class strategy advisor.",
+                user_prompt=prompt,
+                temperature=temperature,
+            )
+            mission_raw = ""
+            goals: List[str] = []
+            for line in resp.splitlines():
+                stripped = line.strip()
+                if stripped.lower().startswith("mission:"):
+                    mission_raw = stripped.split(":", 1)[1].strip()
+                elif stripped and stripped[0].isdigit() and stripped[1:2] == ".":
+                    goals.append(stripped.split(".", 1)[1].strip())
+            if not mission_raw:
+                mission_raw = resp.split("\n", 1)[0].strip()
+            mission = clean_mission_text(resp, mission_raw)
+            if len(mission.split()) < 3 or is_meta_mission(mission):
+                mission_regen = generate_mission_only(
+                    host=st.session_state.get("ollama_host", DEFAULT_OLLAMA_HOST),
+                    model=st.session_state.get("ollama_model", DEFAULT_OLLAMA_MODEL),
+                    vision=sel_vision,
+                    issue_text=combined_issue_text,
+                    temperature=temperature,
+                )
+                mission_regen = clean_mission_text(mission_regen, mission_regen)
+                if len(mission_regen.split()) >= 3 and not is_meta_mission(mission_regen):
+                    mission = mission_regen
+                else:
+                    synthesized = synthesize_mission_from_vision(sel_vision)
+                    if synthesized:
+                        mission = synthesized
+            if len(goals) < 5:
+                goals = parse_numbered_list(resp)[:5]
+            st.session_state["mission_goals_by_fw"][fw] = {
+                "notes": st.session_state.get("framework_notes", {}).get(fw, ""),
+                "visions": visions_fw,
+                "selected_idx": sel_idx,
+                "mission": mission,
+                "goals": goals,
+            }
+        st.success("Generated missions and goals per framework.")
+    except Exception as e:
+        st.error(f"Failed to generate per-framework mission/goals: {e}")
+
+# Export multi-framework docx
+if st.session_state.get("mission_goals_by_fw"):
+    content = export_multi_framework_docx(
+        issue_text=combined_issue_text,
+        frameworks_data=st.session_state["mission_goals_by_fw"],
+    )
+    st.download_button(
+        label="Download multi-framework analysis.docx",
+        data=content,
+        file_name="multi_framework_analysis.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
