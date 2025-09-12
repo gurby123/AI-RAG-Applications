@@ -625,8 +625,27 @@ if st.button("Develop missions and goals per framework"):
     except Exception as e:
         st.error(f"Failed to generate per-framework mission/goals: {e}")
 
-# Export multi-framework docx
+# Display per-framework results before download
 if st.session_state.get("mission_goals_by_fw"):
+    st.subheader("Per-framework results")
+    for fw in selected_frameworks:
+        data = st.session_state["mission_goals_by_fw"].get(fw)
+        if not data:
+            continue
+        st.markdown(f"### {fw}")
+        visions_fw = data.get("visions", [])
+        sel_idx = data.get("selected_idx", 0)
+        if visions_fw:
+            st.markdown(f"Selected vision: {visions_fw[sel_idx] if 0 <= sel_idx < len(visions_fw) else ''}")
+        mission_fw = data.get("mission", "")
+        goals_fw = data.get("goals", [])
+        if mission_fw:
+            st.markdown(f"**Mission:** {mission_fw}")
+        if goals_fw:
+            st.markdown("**Goals:**")
+            for i, g in enumerate(goals_fw, start=1):
+                st.markdown(f"{i}. {g}")
+
     content = export_multi_framework_docx(
         issue_text=combined_issue_text,
         frameworks_data=st.session_state["mission_goals_by_fw"],
