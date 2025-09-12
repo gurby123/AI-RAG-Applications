@@ -102,36 +102,37 @@ def first_sentence(text: str) -> str:
 def clean_mission_text(resp_text: str, mission_text: str) -> str:
     """Strip placeholder labels and fall back to a meaningful sentence if needed."""
     cleaned = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", mission_text).strip()
-    placeholders = {"mission", "mission statement", "tbd", "placeholder", "n/a"}
+    placeholders = {"mission", "mission statement", "tbd", "placeholder", "n/a", "mission:", "mission statement:"}
     if cleaned.lower() in placeholders or len(cleaned.split()) < 3:
-        # Try to extract the first substantial sentence after 'Mission:' in the response
-        lower = resp_text
-        if "Mission:" in lower:
-            after = lower.split("Mission:", 1)[1].strip()
-            candidate = first_sentence(after)
-            candidate = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", candidate).strip()
-            if len(candidate.split()) >= 3 and candidate.lower() not in placeholders:
-                return candidate
-        # Fallback: first substantial non-heading/non-list line
-        for line in resp_text.splitlines():
-            s = line.strip()
+        # Try to extract the first substantial line after 'Mission:'
+        after = resp_text.split("Mission:", 1)[1] if "Mission:" in resp_text else resp_text
+        for line in after.splitlines():
+            s = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", line.strip()).strip()
             if not s:
                 continue
             if s.lower().startswith("goals"):
                 break
-            if s[0].isdigit() and s[1:2] == ".":
+            if s[0:2].isdigit() and s[2:3] == ".":
                 continue
-            s2 = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", s).strip()
-            if len(s2.split()) >= 3 and s2.lower() not in placeholders:
-                return s2
+            if len(s.split()) >= 3 and s.lower() not in placeholders:
+                return first_sentence(s)
         return cleaned
     return cleaned
+
+
+def synthesize_mission_from_vision(vision: str) -> str:
+    v = vision.strip().rstrip(".")
+    if not v:
+        return ""
+    if v.lower().startswith("to "):
+        return f"Our mission is {v[0:2].lower()}{v[2:]} .".replace("  ", " ")
+    return f"Our mission is to {v[0].lower()}{v[1:]} .".replace("  ", " ")
 
 
 def build_mission_goals_prompt(selected_vision: str, issue_text: str, selected_frameworks: List[str]) -> str:
     frameworks_block = ", ".join(selected_frameworks)
     return (
-        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals. The mission must expand and operationalize the chosen vision; do NOT use placeholders like 'Mission Statement' or 'TBD'. Each goal must clearly align with and advance both the vision and the mission.\n\n"
+        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals. The mission must expand and operationalize the chosen vision; do NOT use placeholders like 'Mission Statement' or 'TBD'. Write 'Mission: ' followed immediately by the mission content on the same line. Each goal must clearly align with and advance both the vision and the mission.\n\n"
         f"Selected vision (one sentence):\n{selected_vision}\n\n"
         f"Key business issues and/or document text:\n{issue_text}\n\n"
         f"Framework lenses to reflect: {frameworks_block}.\n\n"
@@ -315,16 +316,21 @@ if visions:
                     user_prompt=prompt,
                     temperature=temperature,
                 )
-                mission = ""
+                mission_raw = ""
                 goals: List[str] = []
                 for line in resp.splitlines():
                     stripped = line.strip()
                     if stripped.lower().startswith("mission:"):
-                        mission = stripped.split(":", 1)[1].strip()
+                        mission_raw = stripped.split(":", 1)[1].strip()
                     elif stripped and stripped[0].isdigit() and stripped[1:2] == ".":
                         goals.append(stripped.split(".", 1)[1].strip())
-                if not mission:
-                    mission = resp.split("\n", 1)[0].strip()
+                if not mission_raw:
+                    mission_raw = resp.split("\n", 1)[0].strip()
+                mission = clean_mission_text(resp, mission_raw)
+                if len(mission.split()) < 3:
+                    synthesized = synthesize_mission_from_vision(visions[selected_idx])
+                    if synthesized:
+                        mission = synthesized
                 if len(goals) < 5:
                     goals = parse_numbered_list(resp)[:5]
                 st.session_state["mission"] = mission
