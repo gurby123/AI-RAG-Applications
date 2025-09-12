@@ -1,5 +1,6 @@
 import os
 import io
+import re
 from typing import List
 
 import streamlit as st
@@ -98,10 +99,39 @@ def first_sentence(text: str) -> str:
     return text[: sentence_end + 1].strip() if sentence_end is not None else text.strip()
 
 
+def clean_mission_text(resp_text: str, mission_text: str) -> str:
+    """Strip placeholder labels and fall back to a meaningful sentence if needed."""
+    cleaned = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", mission_text).strip()
+    placeholders = {"mission", "mission statement", "tbd", "placeholder", "n/a"}
+    if cleaned.lower() in placeholders or len(cleaned.split()) < 3:
+        # Try to extract the first substantial sentence after 'Mission:' in the response
+        lower = resp_text
+        if "Mission:" in lower:
+            after = lower.split("Mission:", 1)[1].strip()
+            candidate = first_sentence(after)
+            candidate = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", candidate).strip()
+            if len(candidate.split()) >= 3 and candidate.lower() not in placeholders:
+                return candidate
+        # Fallback: first substantial non-heading/non-list line
+        for line in resp_text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if s.lower().startswith("goals"):
+                break
+            if s[0].isdigit() and s[1:2] == ".":
+                continue
+            s2 = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", s).strip()
+            if len(s2.split()) >= 3 and s2.lower() not in placeholders:
+                return s2
+        return cleaned
+    return cleaned
+
+
 def build_mission_goals_prompt(selected_vision: str, issue_text: str, selected_frameworks: List[str]) -> str:
     frameworks_block = ", ".join(selected_frameworks)
     return (
-        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals. The mission must operationalize the vision; each goal must clearly align with and advance both the vision and the mission.\n\n"
+        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals. The mission must expand and operationalize the chosen vision; do NOT use placeholders like 'Mission Statement' or 'TBD'. Each goal must clearly align with and advance both the vision and the mission.\n\n"
         f"Selected vision (one sentence):\n{selected_vision}\n\n"
         f"Key business issues and/or document text:\n{issue_text}\n\n"
         f"Framework lenses to reflect: {frameworks_block}.\n\n"
