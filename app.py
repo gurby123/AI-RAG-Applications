@@ -120,6 +120,37 @@ def clean_mission_text(resp_text: str, mission_text: str) -> str:
     return cleaned
 
 
+def is_meta_mission(text: str) -> bool:
+    t = text.strip()
+    lower = t.lower()
+    if not lower:
+        return True
+    # Allow if it clearly starts like a mission
+    if lower.startswith("our mission is") or lower.startswith("to "):
+        return False
+    meta_fragments = [
+        "based on the selected vision",
+        "i will draft",
+        "we will draft",
+        "i will develop",
+        "we will develop",
+        "this mission statement",
+        "the mission statement",
+        "in this section",
+        "i will create",
+        "we will create a mission",
+        "this will outline",
+        "the following mission",
+        "here is the mission",
+    ]
+    if any(frag in lower for frag in meta_fragments):
+        return True
+    # Very short or ends without punctuation may indicate low quality
+    if len(t.split()) < 4:
+        return True
+    return False
+
+
 def synthesize_mission_from_vision(vision: str) -> str:
     v = vision.strip().rstrip(".")
     if not v:
@@ -130,10 +161,33 @@ def synthesize_mission_from_vision(vision: str) -> str:
     return f"Our mission is to {v[0].lower()}{v[1:]} .".replace("  ", " ")
 
 
+def generate_mission_only(host: str, model: str, vision: str, issue_text: str, temperature: float) -> str:
+    user_prompt = (
+        "From the selected vision below, write ONLY the mission statement as 1–2 sentences. "
+        "Do NOT include labels, prefaces, or describe the task. Output the mission content only.\n\n"
+        f"Selected vision (one sentence):\n{vision}\n\n"
+        f"Context:\n{issue_text}\n"
+    )
+    resp = ollama_generate(
+        host=host,
+        model=model,
+        system_prompt="Return only the mission statement text, no labels.",
+        user_prompt=user_prompt,
+        temperature=temperature,
+    )
+    # Take first non-empty line
+    for line in resp.splitlines():
+        s = line.strip()
+        if s:
+            s = re.sub(r"^mission(?:\s*statement)?\s*[-:]*\s*", "", s, flags=re.IGNORECASE).strip()
+            return first_sentence(s) if "." in s or "!" in s or "?" in s else s
+    return resp.strip()
+
+
 def build_mission_goals_prompt(selected_vision: str, issue_text: str, selected_frameworks: List[str]) -> str:
     frameworks_block = ", ".join(selected_frameworks)
     return (
-        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals. The mission must expand and operationalize the chosen vision; do NOT use placeholders like 'Mission Statement' or 'TBD'. Write 'Mission: ' followed immediately by the mission content on the same line. Each goal must clearly align with and advance both the vision and the mission.\n\n"
+        "You are a strategy consultant. Based on the selected vision statement, draft a single mission statement and at least 5 strategic goals. The mission must expand and operationalize the chosen vision; do NOT use placeholders like 'Mission Statement' or 'TBD'. Do NOT describe what you are about to do; write the mission content itself. Write 'Mission: ' followed immediately by the mission content on the same line. Each goal must clearly align with and advance both the vision and the mission.\n\n"
         f"Selected vision (one sentence):\n{selected_vision}\n\n"
         f"Key business issues and/or document text:\n{issue_text}\n\n"
         f"Framework lenses to reflect: {frameworks_block}.\n\n"
@@ -328,10 +382,22 @@ if visions:
                 if not mission_raw:
                     mission_raw = resp.split("\n", 1)[0].strip()
                 mission = clean_mission_text(resp, mission_raw)
-                if len(mission.split()) < 3:
-                    synthesized = synthesize_mission_from_vision(visions[selected_idx])
-                    if synthesized:
-                        mission = synthesized
+                if len(mission.split()) < 3 or is_meta_mission(mission):
+                    # Try mission-only regeneration
+                    mission_regen = generate_mission_only(
+                        host=st.session_state.get("ollama_host", DEFAULT_OLLAMA_HOST),
+                        model=st.session_state.get("ollama_model", DEFAULT_OLLAMA_MODEL),
+                        vision=visions[selected_idx],
+                        issue_text=st.session_state.get("issue_text", ""),
+                        temperature=temperature,
+                    )
+                    mission_regen = clean_mission_text(mission_regen, mission_regen)
+                    if len(mission_regen.split()) >= 3 and not is_meta_mission(mission_regen):
+                        mission = mission_regen
+                    else:
+                        synthesized = synthesize_mission_from_vision(visions[selected_idx])
+                        if synthesized:
+                            mission = synthesized
                 if len(goals) < 5:
                     goals = parse_numbered_list(resp)[:5]
                 st.session_state["mission"] = mission
