@@ -101,18 +101,18 @@ def first_sentence(text: str) -> str:
 
 def clean_mission_text(resp_text: str, mission_text: str) -> str:
     """Strip placeholder labels and fall back to a meaningful sentence if needed."""
-    cleaned = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", mission_text).strip()
+    cleaned = re.sub(r"^mission(?:\s*statement)?\s*[-:]*\s*", "", mission_text, flags=re.IGNORECASE).strip()
     placeholders = {"mission", "mission statement", "tbd", "placeholder", "n/a", "mission:", "mission statement:"}
     if cleaned.lower() in placeholders or len(cleaned.split()) < 3:
         # Try to extract the first substantial line after 'Mission:'
         after = resp_text.split("Mission:", 1)[1] if "Mission:" in resp_text else resp_text
         for line in after.splitlines():
-            s = re.sub(r"^(?i)mission(?:\s*statement)?\s*[-:]*\s*", "", line.strip()).strip()
+            s = re.sub(r"^mission(?:\s*statement)?\s*[-:]*\s*", "", line.strip(), flags=re.IGNORECASE).strip()
             if not s:
                 continue
             if s.lower().startswith("goals"):
                 break
-            if s[0:2].isdigit() and s[2:3] == ".":
+            if len(s) >= 2 and s[0].isdigit() and s[1:2] == ".":
                 continue
             if len(s.split()) >= 3 and s.lower() not in placeholders:
                 return first_sentence(s)
@@ -125,7 +125,8 @@ def synthesize_mission_from_vision(vision: str) -> str:
     if not v:
         return ""
     if v.lower().startswith("to "):
-        return f"Our mission is {v[0:2].lower()}{v[2:]} .".replace("  ", " ")
+        rest = v[3:]
+        return f"Our mission is to {rest[0].lower()}{rest[1:]} .".replace("  ", " ")
     return f"Our mission is to {v[0].lower()}{v[1:]} .".replace("  ", " ")
 
 
